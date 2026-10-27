@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clue-Less Test Client</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; }
+  fieldset { margin-bottom: 8px; }
+  #log { font-family: monospace; font-size: 12px; border: 1px solid #999; height: 320px; overflow-y: scroll; padding: 4px; white-space: pre-wrap; }
+  .out { color: #555; } .bcast { color: #a33; } .ucast { color: #236; }
+</style>
+</head>
+<body>
+<h2>Clue-Less Test Client (Skeletal)</h2>
+<p id="status">Not connected</p>
+
+<fieldset><legend>Lobby</legend>
+  Name <input id="name" value="Player">
+  <button onclick="PlayerInput.createGame()">C1 Create game</button>
+  Game code <input id="code" size="7">
+  <button onclick="PlayerInput.joinGame()">C2 Join game</button>
+  <button onclick="PlayerInput.startGame()">C4 Start game</button>
+</fieldset>
+
+<fieldset><legend>Game</legend>
+  Move to <input id="to" value="HALL" size="10"> <button onclick="PlayerInput.move()">C6 Move</button><br>
+  Suspect <input id="suspect" value="PLUM" size="8"> Weapon <input id="weapon" value="ROPE" size="8">
+  Room <input id="room" value="HALL" size="8">
+  <button onclick="PlayerInput.accuse()">C9 Accuse</button>
+</fieldset>
+
+<div id="log"></div>
+
+<script>
+// Client subsystem components (SRS 2.2.2), kept minimal for the skeletal increment.
+
+// Local Game State: what this client knows from the server.
+const LocalGameState = {
+  gameId: null, playerId: null, token: null, lastSeq: 0,
+  apply(msg) {
+    if (msg.seq != null) this.lastSeq = msg.seq;
+    GUI.render(msg);
+  }
+};
+
+// GUI: shows every message sent and received.
+const GUI = {
+  log(text, cls) {
+    const div = document.createElement('div');
+    div.className = cls || '';
+    div.textContent = new Date().toLocaleTimeString() + '  ' + text;
+    const log = document.getElementById('log');
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  },
+  render(msg) {
+    const cls = msg.type.startsWith('B') ? 'bcast' : 'ucast';
+    const seq = msg.seq != null ? ' seq=' + msg.seq : '';
+    this.log('RECV ' + msg.type + seq + ' ' + JSON.stringify(msg.payload), cls);
+  }
+};
+
+// Client Communication: REST out, WebSocket in.
+const ClientCommunication = {
+  async send(method, path, body) {
+    GUI.log('SEND ' + method + ' ' + path + ' ' + (body ? JSON.stringify(body) : ''), 'out');
+    const res = await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (LocalGameState.token || '') },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const json = await res.json().catch(() => ({}));
+    GUI.log('HTTP ' + res.status + ' ' + JSON.stringify(json), 'out');
+    return json;
+  },
+  connect() {
+    const url = 'ws://' + location.host + '/ws?gameId=' + LocalGameState.gameId + '&playerId=' + LocalGameState.playerId;
+    const ws = new WebSocket(url);
+    ws.onopen = () => document.getElementById('status').textContent =
+      'Connected: game ' + LocalGameState.gameId + ', player ' + LocalGameState.playerId;
+    ws.onclose = () => document.getElementById('status').textContent = 'Disconnected';
+    ws.onmessage = e => {
+      try { LocalGameState.apply(JSON.parse(e.data)); }
+      catch { GUI.log('RECV ' + e.data); }   // plain-text welcome message
+    };
+  }
+};
+
+// Player Input: turns button clicks into client-to-server messages.
+const val = id => document.getElementById(id).value;
+const game = () => '/api/games/' + LocalGameState.gameId;
+const PlayerInput = {
+  async createGame() { this.enter(await ClientCommunication.send('POST', '/api/games', { username: val('name') })); },
+  async joinGame() { this.enter(await ClientCommunication.send('POST', '/api/games/' + val('code') + '/players', { username: val('name') })); },
+  enter(r) {
+    if (!r.gameId) return;
+    Object.assign(LocalGameState, { gameId: r.gameId, playerId: r.playerId, token: r.token });
+    document.getElementById('code').value = r.gameId;
+    ClientCommunication.connect();
+  },
+  startGame() { ClientCommunication.send('POST', game() + '/start'); },
+  move() { ClientCommunication.send('POST', game() + '/move', { to: val('to'), stay: false }); },
+  accuse() { ClientCommunication.send('POST', game() + '/accusation', { suspect: val('suspect'), weapon: val('weapon'), room: val('room') }); }
+};
+</script>
+</body>
+</html>
